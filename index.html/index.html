@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="tr">
+
+<head>
+    <meta charset="UTF-8">
+    <title>GALAXY DEFENDER: RETRO KEYBOARD</title>
+    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+    <style>
+        body {
+            background-color: #111;
+            color: white;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            font-family: 'Press Start 2P', cursive;
+            /* Retro Font */
+            overflow: hidden;
+        }
+
+        #game-container {
+            position: relative;
+            box-shadow: 0 0 50px rgba(0, 255, 0, 0.2);
+            border: 4px solid #333;
+            background-color: #000;
+        }
+
+        canvas {
+            display: block;
+        }
+
+        #ui-layer {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            width: 95%;
+            display: flex;
+            justify-content: space-between;
+            pointer-events: none;
+            text-shadow: 2px 2px 0 #000;
+        }
+
+        #game-over {
+            display: none;
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.85);
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 10;
+        }
+
+        h1 {
+            color: #f00;
+            margin-bottom: 20px;
+            text-shadow: 4px 4px 0 #500;
+            font-size: 40px;
+            text-align: center;
+        }
+
+        button {
+            background: #0f0;
+            border: none;
+            padding: 20px 40px;
+            font-family: 'Press Start 2P';
+            font-size: 16px;
+            cursor: pointer;
+            color: #000;
+            box-shadow: 0 5px 0 #005500;
+        }
+
+        button:active {
+            transform: translateY(5px);
+            box-shadow: none;
+        }
+
+        .controls {
+            position: absolute;
+            bottom: 10px;
+            width: 100%;
+            text-align: center;
+            color: #555;
+            font-size: 10px;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div id="game-container">
+        <div id="ui-layer">
+            <div>SKOR: <span id="scoreEl">0</span></div>
+            <div>CAN: <span id="livesEl">3</span></div>
+        </div>
+
+        <canvas id="gameCanvas" width="600" height="700"></canvas>
+
+        <div class="controls">SOL/SAĞ OK: HAREKET | BOŞLUK: ATEŞ</div>
+
+        <div id="game-over">
+            <h1>OYUN BİTTİ</h1>
+            <p style="margin-bottom: 30px; color: #aaa;">SON SKOR: <span id="finalScore">0</span></p>
+            <button onclick="restartGame()">TEKRAR DENE</button>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        // --- AYARLAR ---
+        const PLAYER_SPEED = 5;
+        const BULLET_SPEED = 7;
+        const ENEMY_SPEED_X = 1; // Sağa sola gitme hızı
+        const ENEMY_DROP_Y = 20; // Aşağı inme miktarı
+
+        let state = {
+            gameRunning: true,
+            score: 0,
+            lives: 3,
+            enemyDir: 1, // 1: Sağ, -1: Sol
+            particles: []
+        };
+
+        // --- GÖRSELLER (Piksel Çizim) ---
+        // Uzaylı Şekli (Basit Matrix)
+        const alienSprite = [
+            [0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0],
+            [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0],
+            [0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0],
+            [0, 1, 1, 0, 1, 1, 1, 0, 1, 1, 0],
+            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+            [1, 0, 1, 1, 1, 1, 1, 1, 1, 0, 1],
+            [1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 1],
+            [0, 0, 0, 1, 1, 0, 1, 1, 0, 0, 0]
+        ];
+
+        // --- NESNELER ---
+        const player = {
+            x: canvas.width / 2 - 20,
+            y: canvas.height - 50,
+            w: 40, h: 20,
+            color: '#0f0',
+            bullets: [],
+            cooldown: 0
+        };
+
+        let enemies = [];
+        let enemyBullets = [];
+
+        // --- KONTROLLER ---
+        const keys = { ArrowLeft: false, ArrowRight: false, Space: false };
+
+        document.addEventListener('keydown', (e) => {
+            if (e.code === 'ArrowLeft') keys.ArrowLeft = true;
+            if (e.code === 'ArrowRight') keys.ArrowRight = true;
+            if (e.code === 'Space') {
+                keys.Space = true;
+                // Sayfanın kaymasını engelle
+                e.preventDefault();
+            }
+        });
+        document.addEventListener('keyup', (e) => {
+            if (e.code === 'ArrowLeft') keys.ArrowLeft = false;
+            if (e.code === 'ArrowRight') keys.ArrowRight = false;
+            if (e.code === 'Space') keys.Space = false;
+        });
+
+        // --- FONKSİYONLAR ---
+
+        function initEnemies() {
+            enemies = [];
+            const rows = 4;
+            const cols = 8;
+            for (let r = 0; r < rows; r++) {
+                for (let c = 0; c < cols; c++) {
+                    enemies.push({
+                        x: 50 + c * 60,
+                        y: 50 + r * 50,
+                        w: 40, h: 30,
+                        type: r // Satıra göre renk değişebilir
+                    });
+                }
+            }
+        }
+
+        function drawPixelSprite(sprite, x, y, size, color) {
+            ctx.fillStyle = color;
+            for (let r = 0; r < sprite.length; r++) {
+                for (let c = 0; c < sprite[r].length; c++) {
+                    if (sprite[r][c] === 1) {
+                        ctx.fillRect(x + c * size, y + r * size, size, size);
+                    }
+                }
+            }
+        }
+
+        function createExplosion(x, y, color) {
+            for (let i = 0; i < 10; i++) {
+                state.particles.push({
+                    x: x, y: y,
+                    vx: (Math.random() - 0.5) * 5,
+                    vy: (Math.random() - 0.5) * 5,
+                    life: 1.0,
+                    color: color
+                });
+            }
+        }
+
+        function update() {
+            if (!state.gameRunning) return;
+
+            // 1. OYUNCU HAREKETİ
+            if (keys.ArrowLeft && player.x > 0) player.x -= PLAYER_SPEED;
+            if (keys.ArrowRight && player.x < canvas.width - player.w) player.x += PLAYER_SPEED;
+
+            // 2. ATEŞ ETME
+            if (player.cooldown > 0) player.cooldown--;
+            if (keys.Space && player.cooldown === 0) {
+                player.bullets.push({ x: player.x + player.w / 2 - 2, y: player.y, w: 4, h: 10 });
+                player.cooldown = 15; // Atış hızı sınırı
+            }
+
+            // 3. MERMİ HAREKETİ
+            for (let i = player.bullets.length - 1; i >= 0; i--) {
+                let b = player.bullets[i];
+                b.y -= BULLET_SPEED;
+                if (b.y < 0) player.bullets.splice(i, 1);
+            }
+
+            // 4. DÜŞMAN HAREKETİ (Sürü Mantığı)
+            let hitEdge = false;
+            enemies.forEach(e => {
+                e.x += ENEMY_SPEED_X * state.enemyDir;
+                if (e.x <= 0 || e.x + e.w >= canvas.width) hitEdge = true;
+            });
+
+            if (hitEdge) {
+                state.enemyDir *= -1; // Yön değiştir
+                enemies.forEach(e => e.y += ENEMY_DROP_Y); // Aşağı in
+            }
+
+            // 5. ÇARPIŞMA KONTROLÜ (Mermi -> Düşman)
+            for (let i = player.bullets.length - 1; i >= 0; i--) {
+                let b = player.bullets[i];
+                let hit = false;
+                for (let j = enemies.length - 1; j >= 0; j--) {
+                    let e = enemies[j];
+                    if (b.x < e.x + e.w && b.x + b.w > e.x && b.y < e.y + e.h && b.y + b.h > e.y) {
+                        // Vuruldu
+                        createExplosion(e.x + e.w / 2, e.y + e.h / 2, '#fff');
+                        enemies.splice(j, 1);
+                        state.score += 100;
+                        document.getElementById('scoreEl').innerText = state.score;
+                        hit = true;
+                        break;
+                    }
+                }
+                if (hit) player.bullets.splice(i, 1);
+            }
+
+            // 6. DÜŞMAN ATEŞİ (Rastgele)
+            if (Math.random() < 0.02 && enemies.length > 0) {
+                let shooter = enemies[Math.floor(Math.random() * enemies.length)];
+                enemyBullets.push({ x: shooter.x + shooter.w / 2, y: shooter.y + shooter.h, w: 4, h: 10 });
+            }
+
+            // Düşman Mermilerini Güncelle
+            for (let i = enemyBullets.length - 1; i >= 0; i--) {
+                let eb = enemyBullets[i];
+                eb.y += 4; // Düşman mermi hızı
+
+                // Oyuncuya çarptı mı?
+                if (eb.x < player.x + player.w && eb.x + eb.w > player.x && eb.y < player.y + player.h && eb.y + eb.h > player.y) {
+                    state.lives--;
+                    document.getElementById('livesEl').innerText = state.lives;
+                    createExplosion(player.x, player.y, '#0f0');
+                    enemyBullets.splice(i, 1);
+                    if (state.lives <= 0) gameOver();
+                    continue;
+                }
+                if (eb.y > canvas.height) enemyBullets.splice(i, 1);
+            }
+
+            // 7. OYUN SONU KONTROLLERİ
+            // Düşmanlar aşağı indi mi?
+            enemies.forEach(e => {
+                if (e.y + e.h > player.y) gameOver();
+            });
+            // Düşmanlar bitti mi? (Level atla veya yeniden doğ)
+            if (enemies.length === 0) {
+                initEnemies(); // Basitçe yeniden doldur
+            }
+
+            // 8. PARÇACIKLAR
+            state.particles.forEach((p, index) => {
+                p.x += p.vx; p.y += p.vy; p.life -= 0.05;
+                if (p.life <= 0) state.particles.splice(index, 1);
+            });
+        }
+
+        function draw() {
+            // Arka Planı Temizle
+            ctx.fillStyle = '#000';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // Yıldızlar
+            ctx.fillStyle = '#fff';
+            if (Math.random() > 0.5) ctx.fillRect(Math.random() * canvas.width, Math.random() * canvas.height, 2, 2);
+
+            // Oyuncu
+            ctx.fillStyle = player.color;
+            ctx.fillRect(player.x + 15, player.y, 10, 10); // Namlu
+            ctx.fillRect(player.x, player.y + 10, 40, 10); // Gövde
+
+            // Oyuncu Mermileri
+            ctx.fillStyle = '#ff0';
+            player.bullets.forEach(b => ctx.fillRect(b.x, b.y, b.w, b.h));
+
+            // Düşmanlar
+            enemies.forEach(e => {
+                // Her satıra farklı renk
+                let color = e.type === 0 ? '#f00' : (e.type === 1 ? '#ff0' : (e.type === 2 ? '#0ff' : '#f0f'));
+                drawPixelSprite(alienSprite, e.x, e.y, 3, color); // 3 kat büyütülmüş piksel
+            });
+
+            // Düşman Mermileri (Zigzag efekti)
+            ctx.fillStyle = '#fff';
+            enemyBullets.forEach(eb => {
+                ctx.fillRect(eb.x, eb.y, eb.w, eb.h);
+            });
+
+            // Parçacıklar
+            state.particles.forEach(p => {
+                ctx.globalAlpha = p.life;
+                ctx.fillStyle = p.color;
+                ctx.fillRect(p.x, p.y, 4, 4);
+                ctx.globalAlpha = 1.0;
+            });
+        }
+
+        function gameOver() {
+            state.gameRunning = false;
+            document.getElementById('game-over').style.display = 'flex';
+            document.getElementById('finalScore').innerText = state.score;
+        }
+
+        function restartGame() {
+            state.score = 0;
+            state.lives = 3;
+            state.gameRunning = true;
+            state.particles = [];
+            player.bullets = [];
+            enemyBullets = [];
+
+            document.getElementById('scoreEl').innerText = "0";
+            document.getElementById('livesEl').innerText = "3";
+            document.getElementById('game-over').style.display = 'none';
+
+            initEnemies();
+        }
+
+        function loop() {
+            update();
+            draw();
+            requestAnimationFrame(loop);
+        }
+
+        // Başlat
+        initEnemies();
+        loop();
+
+    </script>
+</body>
+
+</html>
